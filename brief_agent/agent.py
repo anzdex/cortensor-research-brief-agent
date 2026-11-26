@@ -47,7 +47,10 @@ DEFAULT_MODELS = {
 }
 
 # A 1B local model on CPU needs longer than the 60 s provider default.
-PROVIDER_TIMEOUT_S = 300
+# Raised to 900 s: a 7B model prefills >3000-token contexts at ~10 tok/s
+# on CPU, so a cache-miss prefill alone exceeds 300 s and the provider
+# call fails with HTTP 500 (observed 26 Nov 2026, qwen2.5:7b).
+PROVIDER_TIMEOUT_S = 900
 # Turn budget for one full brief run (several model round-trips: tool calls
 # + final JSON). The SDK default is 90 s, which a cold 1B CPU model cannot
 # meet; 600 s is generous but bounded. Override with OPENMINION_TURN_TIMEOUT.
@@ -104,6 +107,15 @@ def ensure_config(provider: str, model: str) -> Path:
         )
     providers[provider]["model"] = model
     providers[provider]["timeout_seconds"] = PROVIDER_TIMEOUT_S
+    if provider == "ollama":
+        # OpenMinion's Ollama provider defaults to tool_call_strategy
+        # "fallback", under which the adapter never sends the tools to the
+        # model (native tools are only sent for "native"/"hybrid") and the
+        # fallback parser stays disabled for multi-tool agents — so the
+        # model can never call a tool (verified: 0 tool calls with both
+        # llama3.2:3b and qwen2.5:7b). Force "native": Ollama's /api/chat
+        # supports OpenAI-style tools for these models.
+        providers[provider]["tool_call_strategy"] = "native"
     CONFIG_PATH.write_text(json.dumps(data, indent=2))
     return CONFIG_PATH
 

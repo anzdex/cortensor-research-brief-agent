@@ -1,0 +1,29 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{background:#000;color:#e8e8e8;font-family:"DejaVu Sans Mono",monospace;font-size:18px;margin:0;padding:18px 26px;line-height:1.55}
+h1{color:#7dd87d;font-size:22px;margin:0 0 12px 0}
+h2{color:#8ec9ff;font-size:18px;margin:14px 0 4px 0}
+p{margin:4px 0} li{margin:3px 0}
+</style></head><body>
+<h1>Research Brief Agent — the brief it just wrote</h1>
+<div id="brief">loading…</div>
+<script>
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+async function tick(){
+  try{
+    const r=await fetch('/outputs/cortensor-network-brief.md',{cache:'no-store'});
+    const t=await r.text();
+    let h='', inList=false;
+    for(const line of t.split('\n')){
+      if(line.startsWith('# ')){ if(inList){h+='</ul>';inList=false;} h+='<h2>'+esc(line.slice(2))+'</h2>'; }
+      else if(line.startsWith('## ')){ if(inList){h+='</ul>';inList=false;} h+='<h2>'+esc(line.slice(3))+'</h2>'; }
+      else if(line.startsWith('- ')){ if(!inList){h+='<ul>';inList=true;} h+='<li>'+esc(line.slice(2))+'</li>'; }
+      else if(line.trim()===''){ if(inList){h+='</ul>';inList=false;} }
+      else { if(inList){h+='</ul>';inList=false;} h+='<p>'+esc(line)+'</p>'; }
+    }
+    if(inList) h+='</ul>';
+    document.getElementById('brief').innerHTML=h;
+  }catch(e){ document.getElementById('brief').textContent='(brief not written yet)'; }
+  setTimeout(tick,1000);
+}
+tick();
+</script></body></html>

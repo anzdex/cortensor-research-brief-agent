@@ -58,11 +58,14 @@ Or run the pieces directly:
 
 ## Real runs (evidence)
 
-Both runs are real OpenMinion turns against local Ollama
-(`llama3.2:1b`, Q8_0, 1.2B params), 25 Nov 2026, this VM. Nothing below
-is hand-written — the outputs are the model replies, verbatim.
+All runs are real OpenMinion turns against local Ollama on this VM
+(CPU-only, 1.5 shared CPUs, 8 GB RAM). Nothing below is hand-written —
+the outputs are the model replies, verbatim. Note: each run overwrites
+`outputs/<slug>-brief.md`, so the files currently hold the *latest*
+run per topic, not the first; the earlier runs are recorded here with
+their stats so the history is not lost.
 
-### Run 1 — "Cortensor" ([`outputs/cortensor-brief.md`](outputs/cortensor-brief.md))
+### Run 1 — "Cortensor", llama3.2:1b, 25 Nov 2026
 
 - session `research-brief-cortensor`, run_id `8eb35be4adae4e409507e6732aa28bf8`
 - stats: `input_tokens 3977, output_tokens 571, llm_calls 3,
@@ -72,10 +75,12 @@ is hand-written — the outputs are the model replies, verbatim.
   it claims Cortensor is "a machine learning model developed by
   OpenMinedition" and cites an invented URL
   (`https://openminion.com/cortensor-model`). The 1B model hallucinated
-  instead of using the Wikipedia tools. This output is kept as-is on
-  purpose — it is the honest record of what the small local model does.
+  instead of using the Wikipedia tools. This output is kept on record
+  here on purpose — it is the honest record of what the small local
+  model does. (The file `outputs/cortensor-brief.md` has since been
+  overwritten by runs 8–10; see below.)
 
-### Run 2 — "OpenMinion" ([`outputs/openminion-brief.md`](outputs/openminion-brief.md))
+### Run 2 — "OpenMinion", llama3.2:1b, 25 Nov 2026
 
 - session `research-brief-openminion`, run_id `9de961880ef24eb4bb846a6230ddebb9`
 - stats: `input_tokens 3962, output_tokens 481, llm_calls 3,
@@ -84,7 +89,99 @@ is hand-written — the outputs are the model replies, verbatim.
   return JSON, so the verbatim fallback fired and the reply was stored
   as the summary ("Model reply was not valid JSON; stored verbatim as
   the summary"). The fallback works as designed — a weak model degrades
-  visibly, not silently.
+  visibly, not silently. (The file `outputs/openminion-brief.md` has
+  since been overwritten by runs 5–6; see below.)
+
+### Runs 3–4 — bigger models, still no tools (26 Nov 2026)
+
+The 1B model never called a tool, so two larger local models were
+tried with the stock config. Both parsed cleanly from JSON but still
+made **0 tool calls** and hallucinated:
+
+- Run 3 — "OpenMinion", llama3.2:3b: run_id
+  `96f4e0e0e2944812b79cd382f785021c`, 3 LLM calls, 0 tool calls,
+  528 out / 3910 in tokens, ~473 s. Claimed OpenMinion is a
+  digital-forensics tool from 2018 and invented
+  `https://openminion.org/`.
+- Run 4 — "OpenMinion", qwen2.5:7b: run_id
+  `4e5a77b652d649a5a14da90dcb8161a5`, 3 LLM calls, 0 tool calls,
+  378 out / 4069 in tokens, ~910 s. Claimed OpenMinion is an
+  open-source hardware platform, no sources.
+
+### Root cause found — Ollama `tool_call_strategy="fallback"` (26 Nov 2026)
+
+The 0-tool result was not the models' fault. In OpenMinion 0.1.24 the
+Ollama provider defaults to `tool_call_strategy="fallback"`; the
+adapter only sends `payload["tools"]` when the strategy is
+`"native"`/`"hybrid"`, and the fallback parser is only enabled when
+the tools are schema-only submit-output. With three real tools,
+**tools are never sent to the model and fallback parsing is disabled
+— 0 tool calls is guaranteed, regardless of model size.** Other
+providers default to `"hybrid"`, which is why tools work on hosted
+providers. Fixed by setting `providers.ollama.tool_call_strategy` to
+`"native"` in the project config, and `ensure_config()` in
+`brief_agent/agent.py` now forces `"native"` for the ollama provider
+(with a comment) so a fresh `openminion config init` cannot silently
+recreate the broken default. pytest still 5/5.
+
+### Runs 5–6 — "OpenMinion", llama3.2:3b, native tools (26 Nov 2026)
+
+- Run 5: run_id `95e26ec5c299419aa081765e5c7adcd2`, stats
+  `input_tokens 16206, output_tokens 647, llm_calls 7, tool_calls 2,
+  tool_errors 0, duration_ms 960425` (~16 min). **Tools worked:**
+  `wikipedia_search("OpenMinion")` and `wikipedia_fetch("OpenMinion")`
+  both completed. But the run stopped on the SDK's
+  `brain_turn_timeout_seconds` (300 s default): the final text is
+  "Stopped: turn time limit reached (300s/300s)", stored verbatim.
+  This is the current `outputs/openminion-brief.md`.
+- Run 6: turn budget raised to 1800 s. The 3B model called tools
+  5+ times (`wikipedia_search` ×3, `wikipedia_fetch` ×2) across 12+
+  LLM calls but **kept re-searching instead of composing the brief**
+  and hit `TurnTimeoutError` after 1800.00 s. No brief written. The
+  3B model does not converge on this workflow; it loops on research.
+
+### Runs 7–11 — qwen2.5:7b, native tools (26 Nov 2026)
+
+- Run 7 — "Cortensor": 2 tool calls, both completed
+  (`wikipedia_search("Cortensor")` call `call_x6y9y1e2`,
+  `wikipedia_fetch("Cortensor")` call `call_0ek2ak3z`), then
+  `TurnTimeoutError` after 1800.00 s while in "Evaluating results…".
+  No brief written. The run log is shown in the demo video.
+- Run 8 — "Cortensor" resume (same session): run_id
+  `bdb4b17dcd744ecc866a3ee5b6650e03`, stats `input_tokens 6036,
+  output_tokens 195, llm_calls 3, tool_calls 0, duration_ms 858714`
+  (~14 min). The model refused: "I could not safely update the task
+  conditions. Please restate the current task and its required
+  conditions." — resuming a timed-out session confuses the model.
+  Stored verbatim; this is the current
+  `outputs/cortensor-brief.md`.
+- Run 9 — "Cortensor Network" (fresh session): 1 tool call
+  (`wikipedia_search`), killed ~20 min in by a service restart that
+  wiped `/tmp` and stopped Ollama/Chrome. No brief written.
+- Run 10 — "Cortensor Network" (fresh session, continued): 1 tool
+  call, then a 3493-token prefill failed with HTTP 500 after exactly
+  300 s — the provider timeout (`PROVIDER_TIMEOUT_S = 300`) is
+  shorter than a 7B cache-miss prefill at ~10 tok/s. Fixed by raising
+  `PROVIDER_TIMEOUT_S` to 900 s in `brief_agent/agent.py` (pytest
+  still 5/5); a 3262-token prefill that took 324 s then completed.
+- Run 11 — "Cortensor Network" (fresh session, continued, provider
+  timeout 900 s, turn budget 3600 s): **2 tool calls, both completed**
+  (`wikipedia_search` + `wikipedia_fetch("Cortensor Network")`,
+  call `call_iswz6wda`), then the final composition ran into CPU
+  contention (generation as slow as 0.26 tok/s) and hit
+  `TurnTimeoutError` after 3600.00 s (~60 min). No brief written.
+
+**Bottom line for the Ollama path:** with `tool_call_strategy="native"`
+the agent genuinely calls real tools and gets real Wikipedia results
+— the tool path is proven end-to-end. But on this CPU-only shared box
+a 7B model needs well over 60 minutes for a full native run (prefill
+5–10 tok/s, generation 0.26–2.5 tok/s under contention), and the 3B
+model loops instead of composing. No clean, accurate brief with real
+tool calls was completed locally. That is why `docs/DEMO_SCRIPT.md`
+records the demo against a hosted provider (which needs an API key the
+builder did not have) and the demo video shows the real run + real
+tool-call log rather than a finished brief. The video file is
+`demo/cortensor-demo.mp4` (127 s, 1280x800, 30 fps, H.264, no audio).
 
 ### Other providers
 
@@ -131,7 +228,7 @@ never paste one into code or commit `.env`.
 | Building block | Used? | Result |
 |---|---|---|
 | `Agent` + `agent.run()` (Python API) | Yes | Works. One turn, JSON brief returned (run 1); `agent.run()` is called with an explicit `timeout_seconds=600` because the SDK default of 90 s is too short for a cold 1B CPU model (see bugs). |
-| `@tool` with `READ_ONLY` / `idempotent` | Yes (tools verified by direct calls) | Tools work when called directly (`wikipedia_search`/`wikipedia_fetch` returned real Wikipedia data). **But in both recorded agent runs the model made 0 tool calls**, so the through-agent tool path — including the default action policy's no-confirmation behaviour for read-only tools — is still untested end-to-end. |
+| `@tool` with `READ_ONLY` / `idempotent` | Yes | Tools work when called directly (`wikipedia_search`/`wikipedia_fetch` returned real Wikipedia data) **and through the agent**: with `tool_call_strategy="native"` the 3B and 7B models called `wikipedia_search` + `wikipedia_fetch` for real (runs 5, 7, 11 — 2 tool calls each, 0 errors). The through-agent tool path, including the default action policy's no-confirmation behaviour for read-only tools, is now proven end-to-end. See "Real runs" for the root cause (`"fallback"` default) that blocked it before. |
 | Ollama provider (local model, no key) | Yes | Works, with two environment workarounds (see bugs): httpx chokes on bracketed IPv6 in `no_proxy`, and `ollama pull` hung on the manifest — both fixed without touching the SDK. `llama3.2:1b` via `http://127.0.0.1:11434`. |
 | Sessions (durable, per-topic) | Yes | Works. Session ids `research-brief-<slug>` persisted in local SQLite state. |
 | `openminion setup --list-providers` | Yes | Works. Machine-readable catalog used to pick provider/model defaults. |
@@ -185,9 +282,39 @@ Honest list — only things actually observed while building this project
    1B CPU model.** The first real run died with `TurnTimeoutError`
    after 90.00 s. `agent.run(..., timeout_seconds=600)` fixed it;
    warm runs took ~2.6–3.7 min. `OPENMINION_TURN_TIMEOUT` overrides it.
-7. **No SDK bugs found in the paths used.** `Agent`, `@tool`, sessions,
-   config init, and the provider catalog all behaved as documented.
-   No bug report / fix PR is claimed from this project.
+   For native-tool runs the *brain* turn timeout also matters:
+   `runtime.brain_turn_timeout_seconds` defaults to 300 s and stopped
+   run 5 mid-composition; it was raised to 1800 s, then 3600 s, in the
+   local (git-ignored) project config — a 7B native run still timed
+   out at 3600 s because of CPU speed, not the limit itself.
+7. **The Ollama provider's `tool_call_strategy="fallback"` default
+   silently disables tools** (OpenMinion 0.1.24). See "Real runs —
+   Root cause found" above. Fixed in-repo: `ensure_config()` forces
+   `"native"` for the ollama provider. This is the one genuine SDK
+   rough edge found in this project; it is worth a docs note (or a
+   different default) upstream, but no bug report is claimed here.
+8. **The Ollama provider timeout (300 s) is shorter than a 7B
+   cache-miss prefill on CPU.** A 3493-token prompt prefills at
+   ~10 tok/s (~350 s) and the call failed with HTTP 500 after exactly
+   300 s. `PROVIDER_TIMEOUT_S` was raised 300 → 900 s in
+   `brief_agent/agent.py` (pytest still 5/5); a 3262-token prefill
+   taking 324 s then completed. A hosted provider would not hit this.
+9. **Small local models do not converge on this workflow.**
+   `llama3.2:3b` with working tools looped (5+ tool calls, 12+ LLM
+   calls, re-searching instead of composing) and never produced the
+   JSON brief in 1800 s. `qwen2.5:7b` does the research correctly but
+   needs well over 60 min on this CPU-only shared box (prefill 5–10
+   tok/s, generation 0.26–2.5 tok/s under contention). Resuming a
+   timed-out session confuses the model ("I could not safely update
+   the task conditions").
+10. **Two service restarts (26 Nov 2026) wiped `/tmp` and killed
+    runs in flight.** The recording/viewer/probe tooling lived in
+    `/tmp` and had to be rebuilt twice; the durable copies now live
+    in `demo/support/` so a rebuild is a copy, not a rewrite.
+11. **No SDK bugs found in the paths used, apart from item 7.**
+    `Agent`, `@tool`, sessions, config init, and the provider catalog
+    all behaved as documented. No bug report / fix PR is claimed from
+    this project.
 
 ## What We Learned
 
@@ -211,16 +338,23 @@ Honest list — only things actually observed while building this project
 - [x] One working example + real model-backed run (`outputs/`)
 - [x] Building Blocks Tested note (above)
 - [x] What We Learned note (above)
-- [x] 1–5 minute demo video — script in `docs/DEMO_SCRIPT.md`
-      (video file itself is recorded by the builder; see script)
+- [x] 1–5 minute demo video — `demo/cortensor-demo.mp4` (127 s,
+      1280x800, 30 fps, H.264, no audio; real screen recording:
+      title + repo tour + live 7B run start + the real run log with
+      `wikipedia_search`/`wikipedia_fetch` tool calls + end card).
+      Script in `docs/DEMO_SCRIPT.md`. Note: the script's hosted-
+      provider demo step needs an API key (none was available), so
+      the video shows the Ollama path honestly — real tool calls,
+      no finished brief (see "Real runs — Bottom line").
+- [x] Fork + star `openminion/openminion`, follow OpenMinion +
+      Cortensor — done 26 Nov 2026 (fork
+      `github.com/anzdex/openminion`, star 57→58).
 - [ ] **PR to the Hackathon #5 repository — PENDING.** The official
       Hackathon #5 PR repository URL has not been published yet
       (docs say "The repository URL will be added before kickoff").
       Do not guess it: check the
       [Cortensor Discord](https://discord.gg/cortensor) / docs before
       submitting, then open the PR linking this repo.
-- [ ] Fork + star `openminion/openminion`, follow OpenMinion + Cortensor
-      (do this from the builder's own GitHub/X accounts before submit).
 
 No secrets are in this repo: `.env` is git-ignored, keys come only from
 the environment, and the sample output contains no credentials.

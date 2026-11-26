@@ -1,0 +1,18 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{background:#000;color:#e8e8e8;font-family:"DejaVu Sans Mono",monospace;font-size:19px;margin:0;padding:18px 22px;line-height:1.5}
+pre{white-space:pre-wrap;word-wrap:break-word;margin:0}
+.cursor{display:inline-block;width:10px;height:20px;background:#e8e8e8;vertical-align:-3px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+h1{color:#7dd87d;font-size:20px;margin:0 0 10px 0}
+</style></head><body>
+<h1>Research Brief Agent — Cortensor Hackathon #5 (live run)</h1>
+<pre id="log"></pre><span class="cursor"></span>
+<script>
+async function tick(){
+  try{ const r=await fetch('/log.txt',{cache:'no-store'}); const t=await r.text();
+    document.getElementById('log').textContent=t; window.scrollTo(0,document.body.scrollHeight);
+  }catch(e){}
+  setTimeout(tick,700);
+}
+tick();
+</script></body></html>

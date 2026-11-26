@@ -1,0 +1,154 @@
+<!DOCTYPE html><html><head><meta charset='utf-8'><style>
+body{background:#000;color:#e8e8e8;font-family:'DejaVu Sans Mono',monospace;font-size:16px;margin:0;padding:18px 26px;line-height:1.45}
+h1{color:#7dd87d;font-size:22px;margin:0 0 14px 0} h2{color:#8ec9ff;font-size:17px;margin:18px 0 6px 0}
+pre{white-space:pre-wrap;word-wrap:break-word;margin:0;color:#d8d8d8}
+.dim{color:#888}</style></head><body>
+<h1>Research Brief Agent — Cortensor Hackathon #5</h1>
+<p class='dim'>OpenMinion 0.1 Python SDK &nbsp;·&nbsp; one workflow: topic in, researched brief out &nbsp;·&nbsp; repo: github.com/anzdex/cortensor-research-brief-agent</p>
+<h2>main.py — CLI entry point</h2><pre>#!/usr/bin/env python3
+&quot;&quot;&quot;Research Brief Agent — CLI entry point.
+
+Usage:
+    python main.py &quot;Cortensor&quot; [--out outputs/brief.md] [--json]
+    OPENMINION_PROVIDER=openai OPENMINION_MODEL=gpt-4.1-mini python main.py &quot;Topic&quot;
+
+The model call goes through OpenMinion&#x27;s configured provider. With the
+default provider (ollama) no API key is needed — run `ollama pull
+llama3.2:1b` first. With a hosted provider, set its key in the environment
+(see .env.example); keys are never read from files in this repo.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _sanitize_no_proxy() -&gt; None:
+    &quot;&quot;&quot;Drop bracketed IPv6 literals (e.g. ``[::1]``) from no_proxy/NO_PROXY.
+
+    OpenMinion&#x27;s providers use httpx with ``trust_env=True``, and httpx
+    raises ``InvalidURL: Invalid port: &#x27;:1]&#x27;`` on bracketed IPv6 entries in
+    no_proxy. Bare IPv6 forms (``::1``) parse fine, and localhost routing is
+    unaffected. Only this process&#x27;s environment is touched, so the
+    local Ollama server is reached directly instead of through the proxy.
+    &quot;&quot;&quot;
+    for var in (&quot;no_proxy&quot;, &quot;NO_PROXY&quot;):
+        value = os.environ.get(var)
+        if not value:
+            continue
+        kept = [part for part in value.split(&quot;,&quot;) if not part.startswith(&quot;[&quot;)]
+        for host in (&quot;localhost&quot;, &quot;127.0.0.1&quot;):
+            if host not in kept:
+                kept.append(host)
+        os.environ[var] = &quot;,&quot;.join(kept)
+
+
+from brief_agent.agent import resolve_provider, run_brief  # noqa: E402</pre>
+<h2>brief_agent/agent.py — OpenMinion wiring</h2><pre>&quot;&quot;&quot;OpenMinion wiring for the Research Brief Agent.
+
+The agent itself is OpenMinion&#x27;s ``Agent`` (0.1 API, verified against
+openminion 0.1.24): instructions + three read-only tools + a durable
+session. Provider/model come from the environment so the same code runs
+against local Ollama, a hosted provider, or Cortensor Portal — the model
+call is always the configured provider, never a hard-coded reply.
+
+Config handling (documented OpenMinion behaviour):
+- The runtime config lives at ``.openminion-home/.openminion/agents.json``
+  (project-scoped, git-ignored). It is created once with the documented
+  ``openminion config init --provider &lt;provider&gt;`` command.
+- ``ensure_config`` then patches only two documented fields for the active
+  provider: ``providers.&lt;id&gt;.model`` and ``providers.&lt;id&gt;.timeout_seconds``,
+  plus ``agents.openminion.provider``. Credentials are never written here;
+  OpenMinion reads them from the environment (e.g. ``OPENAI_API_KEY``).
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from openminion import Agent, ProviderError, TurnTimeoutError
+
+from .brief import BRIEF_INSTRUCTIONS, parse_brief, slugify
+from .tools import fetch_url, wikipedia_fetch, wikipedia_search
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = PROJECT_ROOT / &quot;.openminion-home&quot; / &quot;.openminion&quot; / &quot;agents.json&quot;
+
+DEFAULT_MODELS = {
+    &quot;ollama&quot;: &quot;llama3.2:1b&quot;,
+    &quot;openai&quot;: &quot;gpt-4.1-mini&quot;,
+    &quot;anthropic&quot;: &quot;claude-sonnet-5&quot;,
+    &quot;openrouter&quot;: &quot;openai/gpt-4.1-mini&quot;,
+    &quot;cortensor-portal&quot;: &quot;oss-20b&quot;,</pre>
+<h2>brief_agent/tools.py — 3 read-only tools</h2><pre>&quot;&quot;&quot;Read-only research tools for the Research Brief Agent.
+
+All tools are pure reads over public HTTP endpoints and need no API key:
+Wikipedia&#x27;s public API for search/summaries, plus a generic URL fetcher.
+They are declared READ_ONLY + idempotent so OpenMinion&#x27;s default action
+policy runs them without an interactive confirmation.
+
+Nothing here calls a model; the model is OpenMinion&#x27;s configured provider.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import html
+import ipaddress
+import json
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from socket import timeout as SocketTimeout
+
+from openminion import tool
+
+_USER_AGENT = &quot;ResearchBriefAgent/0.1 (Cortensor Hackathon #5; +https://github.com/anzdex)&quot;
+_MAX_CHARS = 4000
+_HTTP_TIMEOUT_S = 15
+
+
+def _get_json(url: str) -&gt; dict:
+    req = urllib.request.Request(url, headers={&quot;User-Agent&quot;: _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode(&quot;utf-8&quot;, &quot;replace&quot;))
+
+
+def _get_text(url: str) -&gt; str:
+    req = urllib.request.Request(url, headers={&quot;User-Agent&quot;: _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        raw = resp.read().decode(&quot;utf-8&quot;, &quot;replace&quot;)
+    # Strip scripts/styles, then tags; keep readable text only.
+    raw = re.sub(r&quot;(?is)&lt;(script|style)[^&gt;]*&gt;.*?&lt;/\1&gt;&quot;, &quot; &quot;, raw)
+    raw = re.sub(r&quot;(?s)&lt;[^&gt;]+&gt;&quot;, &quot; &quot;, raw)
+    text = html.unescape(re.sub(r&quot;\s+&quot;, &quot; &quot;, raw)).strip()
+    return text[:_MAX_CHARS]
+
+
+def _is_public_host(host: str) -&gt; bool:
+    &quot;&quot;&quot;Block localhost / private-network fetches (SSRF guard).&quot;&quot;&quot;
+    host = host.lower().rstrip(&quot;.&quot;)
+    if host in {&quot;localhost&quot;, &quot;ip6-localhost&quot;}:
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_private
+    except ValueError:
+        return True  # a DNS name: resolve check happens at connect time
+
+
+@tool(min_scope=&quot;READ_ONLY&quot;, idempotent=True)
+def wikipedia_search(query: str) -&gt; str:
+    &quot;&quot;&quot;Search Wikipedia for a topic. Returns matching article titles + snippets.&quot;&quot;&quot;
+    query = (query or &quot;&quot;).strip()</pre>
+</body></html>
