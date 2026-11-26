@@ -1,0 +1,14 @@
+# OpenMinion runtime state, local virtualenv, secrets, caches.
+.venv/
+.venv*/
+__pycache__/
+*.pyc
+.env
+.openminion-home/
+.openminion/
+.cache/
+*.db
+*.db-journal
+outputs/*.log
+.DS_Store
+.pytest_cache/
